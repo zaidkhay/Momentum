@@ -1,0 +1,28 @@
+# See ARCHITECTURE.md §11 — local development setup
+# Three services only: redis, ingestion, api
+# Frontend runs separately: cd frontend && npm run dev
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  ingestion:
+    build: ./ingestion
+    env_file: .env
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379
+
+  api:
+    build: ./api
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+      - ingestion
+    environment:
+      - REDIS_URL=redis://redis:6379
