@@ -1,0 +1,10 @@
+You are implementing the Momentum project.
+
+Before doing anything in a new session:
+1. Read WINDSURF.md — this is your primary reference
+2. Read architecture.md — this is the detailed spec
+
+Never violate the 7 architecture rules in WINDSURF.md.
+Always reference the architecture doc section in your comments.
+Ask the architect before making any structural decision not covered in the docs.
+Follow the build order in WINDSURF.md — do not skip ahead.
