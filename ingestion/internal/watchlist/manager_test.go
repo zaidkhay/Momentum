@@ -3,6 +3,8 @@ package watchlist
 import (
     "sort"
     "testing"
+	"time"
+	"context"
 )
 
 func TestDiffAddNew(t *testing.T) {
@@ -122,3 +124,21 @@ func TestSympathyMapNoDuplicates(t *testing.T) {
         }
     }
 }
+func TestMarketHoursWeekday(t *testing.T) {
+    // Monday 10:00am ET — should be open
+    loc, _ := time.LoadLocation("America/New_York")
+    monday := time.Date(2026, 3, 23, 10, 0, 0, 0, loc)
+    if !isMarketOpen(monday) {
+        t.Error("expected market open on Monday 10am ET")
+    }
+}
+
+func TestMarketHoursWeekend(t *testing.T) {
+    // Saturday — should be closed
+    loc, _ := time.LoadLocation("America/New_York")
+    saturday := time.Date(2026, 3, 21, 10, 0, 0, 0, loc)
+    if isMarketOpen(saturday) {
+        t.Error("expected market closed on Saturday")
+    }
+}
+

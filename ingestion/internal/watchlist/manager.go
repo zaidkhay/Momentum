@@ -388,14 +388,12 @@ func (m *Manager) refreshLoop() {
 	}
 }
 
-// marketHoursET returns true if the current wall-clock time, converted to the
-// America/New_York timezone, falls on a weekday between 09:28 and 16:00.
-//
-// NEVER uses time.Local — always converts explicitly via time.LoadLocation.
-// Machine local time may be UTC or any other zone; this function is correct
-// regardless of where the container is deployed.
+// isMarketOpen reports whether t, converted to America/New_York, falls on a
+// weekday between 09:28 and 16:00 ET.
+// Accepting a time.Time parameter makes this function deterministically
+// testable with fixed timestamps — no dependency on the real wall clock.
 // See ARCHITECTURE.md §3.2 — market hours constraint on watchlistRefresher.
-func marketHoursET() bool {
+func isMarketOpen(t time.Time) bool {
 	// time.LoadLocation looks up the IANA timezone database bundled with Go.
 	// "America/New_York" handles both EST (UTC-5) and EDT (UTC-4) automatically.
 	loc, err := time.LoadLocation("America/New_York")
@@ -405,18 +403,26 @@ func marketHoursET() bool {
 		return false
 	}
 
-	nowET := time.Now().In(loc)
+	tET := t.In(loc)
 
 	// Reject weekends: Saturday (6) and Sunday (0) are not trading days.
-	wd := nowET.Weekday()
+	wd := tET.Weekday()
 	if wd == time.Saturday || wd == time.Sunday {
 		return false
 	}
 
-	// Convert current ET time to minutes-since-midnight for range comparison.
-	etMinutes := nowET.Hour()*60 + nowET.Minute()
+	// Convert ET time to minutes-since-midnight for range comparison.
+	etMinutes := tET.Hour()*60 + tET.Minute()
 
 	// 09:28 ET = 9*60+28 = 568 minutes
 	// 16:00 ET = 16*60   = 960 minutes
 	return etMinutes >= 568 && etMinutes < 960
+}
+
+// marketHoursET returns true if the current wall-clock time is within market
+// hours. This is the production entry point called by refreshLoop.
+// NEVER uses time.Local — delegates to isMarketOpen which always converts
+// explicitly via America/New_York regardless of container timezone.
+func marketHoursET() bool {
+	return isMarketOpen(time.Now())
 }
