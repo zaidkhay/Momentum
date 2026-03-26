@@ -108,3 +108,17 @@ func TestDiffEmptyNext(t *testing.T) {
         t.Errorf("expected 2 removals, got %v", remove)
     }
 }
+func TestSympathyMapNoDuplicates(t *testing.T) {
+    for leader, peers := range SympathyMap {
+        seen := map[string]bool{}
+        for _, peer := range peers {
+            if peer == leader {
+                t.Errorf("%s lists itself as a sympathy peer", leader)
+            }
+            if seen[peer] {
+                t.Errorf("%s has duplicate peer %s", leader, peer)
+            }
+            seen[peer] = true
+        }
+    }
+}
