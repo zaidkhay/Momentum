@@ -411,6 +411,9 @@ func (c *AlpacaClient) handleTrade(trade TradeMessage) {
 		Ticker: trade.Symbol,
 		Price:  trade.Price,
 		Sector: sector,
+		// int64(trade.Size) converts Alpaca's int trade size to the int64
+		// expected by the Z-score engine's ProcessTick(newVolume int64).
+		Volume: int64(trade.Size),
 		// All other fields are at zero value here.
 		// ZScore, RelVol, ChangePercent, and PrevClose are populated
 		// by the Z-score engine in ingestion/internal/zscore/ (Step 3).

@@ -34,6 +34,7 @@ type SymbolState struct {
 	PrevClose     float64
 	ChangePercent float64
 	RelVol        float64     // current volume / 30-day average volume at this time of day
+	Volume        int64       // raw trade size from this tick
 	ZScore        float64     // rolling Z-score on 1-minute returns
 	Window        [20]float64 // ring buffer of the last 20 one-minute returns
 	WindowIdx     int         // next write position in the ring buffer (modulo 20)
