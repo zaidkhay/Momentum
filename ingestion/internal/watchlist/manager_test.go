@@ -142,3 +142,61 @@ func TestMarketHoursWeekend(t *testing.T) {
     }
 }
 
+func TestMarketHoursAfterClose(t *testing.T) {
+    // Monday 5:00pm ET — after close
+    loc, _ := time.LoadLocation("America/New_York")
+    afterClose := time.Date(2026, 3, 23, 17, 0, 0, 0, loc)
+    if isMarketOpen(afterClose) {
+        t.Error("expected market closed after 4pm ET")
+    }
+}
+
+type mockAlpaca struct {
+    subscribed   []string
+    unsubscribed []string
+}
+
+func (m *mockAlpaca) Subscribe(tickers []string) error {
+    m.subscribed = append(m.subscribed, tickers...)
+    return nil
+}
+
+func (m *mockAlpaca) Unsubscribe(tickers []string) error {
+    m.unsubscribed = append(m.unsubscribed, tickers...)
+    return nil
+}
+
+type mockSupabase struct{}
+
+func (m *mockSupabase) UpsertAvgVolume(
+    ctx context.Context,
+    ticker string,
+    avgVol int64,
+) error {
+    return nil
+}
+
+func TestPromoteToHopeful(t *testing.T) {
+    mock := &mockAlpaca{}
+    mgr := NewManager(
+        nil,
+        mock,
+        &mockSupabase{},
+    )
+
+    // Seed active map with AMTX already subscribed
+    mgr.active["AMTX"] = true
+
+    // Promote AMTX — should subscribe its sympathy peers
+    mgr.PromoteToHopeful("AMTX")
+
+    // GEVO, REGI, VGFC should have been subscribed
+    if len(mock.subscribed) == 0 {
+        t.Error("expected sympathy peers to be subscribed")
+    }
+
+    // AMTX should be in hopeful map
+    if !mgr.hopeful["AMTX"] {
+        t.Error("expected AMTX in hopeful map")
+    }
+}
