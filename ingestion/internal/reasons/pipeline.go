@@ -193,7 +193,7 @@ func (p *Pipeline) process(signal types.Signal) {
 //
 // The date component of the Redis key (`reasons:{ticker}:{YYYY-MM-DD}`) uses
 // ET so the key naturally aligns with the trading day.
-func ttlUntilMarketClose() time.Duration {
+func (p *Pipeline) TtlUntilMarketClose() time.Duration {
 	// time.LoadLocation looks up the IANA timezone database ("tzdata").
 	// "America/New_York" handles both EST (UTC-5) and EDT (UTC-4) automatically.
 	loc, err := time.LoadLocation("America/New_York")
