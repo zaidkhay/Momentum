@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -25,7 +27,7 @@ import (
 type ScreenerClient struct {
 	apiKey    string
 	apiSecret string
-	baseURL   string      // "https://data.alpaca.markets"
+	baseURL   string // "https://data.alpaca.markets"
 	// httpClient has a hard 10-second timeout to prevent slow Alpaca responses
 	// from stalling the 5-minute refresh loop.
 	httpClient *http.Client
@@ -40,21 +42,54 @@ type MoverResult struct {
 	ChangePercent float64
 }
 
+// screenerUniverse is a hardcoded list of ~100 well-known volatile symbols
+// used as the candidate pool for FetchMovers and FetchMostActives.
+// The paid-tier /v2/screener/stocks/movers and /most-actives endpoints return
+// 404 on the free plan, so we fetch snapshots for this universe instead and
+// rank them by change percent or volume locally.
+var screenerUniverse = []string{
+	// Technology
+	"AAPL", "MSFT", "GOOG", "AMZN", "NVDA", "META", "TSLA", "AMD", "INTC",
+	"MU", "SNAP", "UBER", "LYFT", "SQ", "SHOP", "NET", "CRWD", "DDOG",
+	"PLTR", "RBLX", "HOOD", "COIN", "MARA", "RIOT", "SMCI",
+	// Healthcare / Biotech
+	"MRNA", "BNTX", "PFE", "JNJ", "ABBV", "BMY", "LLY", "NVO",
+	"AMGN", "GILD", "BIIB", "REGN", "VRTX",
+	// Energy
+	"XOM", "CVX", "OXY", "DVN", "FANG", "MRO", "HAL", "SLB",
+	// Financials
+	"JPM", "BAC", "GS", "MS", "C", "WFC", "SCHW", "SOFI",
+	// Consumer
+	"NKE", "SBUX", "MCD", "DIS", "NFLX", "ROKU", "ABNB", "DASH",
+	"WMT", "TGT", "COST",
+	// Industrials
+	"BA", "CAT", "DE", "GE", "LMT", "RTX", "UPS",
+	// Materials
+	"FCX", "NEM", "CLF", "X", "AA",
+	// Communication
+	"T", "VZ", "TMUS",
+	// Volatile / meme / small-mid cap
+	"GME", "AMC", "NIO", "LCID", "RIVN", "SPCE", "OPEN",
+	"IONQ", "AFRM", "UPST", "DNA", "LAZR", "PLUG", "FCEL",
+	"TTOO", "SOUN", "VLD", "NKLA", "GOEV", "WKHS",
+	"CLOV", "WISH", "BB", "NOK", "TLRY", "SNDL",
+}
+
 // ── Internal JSON unmarshal targets (unexported) ─────────────────────────────
 
-type moversResponse struct {
-	Gainers []moverEntry `json:"gainers"`
-	Losers  []moverEntry `json:"losers"`
-}
-
-type mostActivesResponse struct {
-	MostActives []moverEntry `json:"most_actives"`
-}
-
-type moverEntry struct {
-	Symbol        string  `json:"symbol"`
-	Price         float64 `json:"price"`
-	ChangePercent float64 `json:"percent_change"`
+// snapshotData maps the Alpaca /v2/stocks/snapshots response per symbol.
+// Only the fields needed for ranking (price, change, volume) are extracted.
+type snapshotData struct {
+	LatestTrade struct {
+		Price float64 `json:"p"`
+	} `json:"latestTrade"`
+	DailyBar struct {
+		Volume int64   `json:"v"`
+		Close  float64 `json:"c"`
+	} `json:"dailyBar"`
+	PrevDailyBar struct {
+		Close float64 `json:"c"`
+	} `json:"prevDailyBar"`
 }
 
 type barsResponse struct {
@@ -80,74 +115,107 @@ func NewScreenerClient(apiKey, apiSecret string) *ScreenerClient {
 
 // ── Public methods ────────────────────────────────────────────────────────────
 
-// FetchMovers calls /v2/screener/stocks/movers with top=50, merges gainers and
-// losers into a single list, then applies the price and percent-change filters:
+// FetchMovers fetches snapshots for the screenerUniverse, computes each
+// symbol's intraday change percent, and returns those passing the filters:
 //
 //	1.0 ≤ price ≤ 50.0  AND  |changePercent| ≥ 8.0
 //
 // Both gainers and losers are included because the Z-score engine uses absolute
 // value thresholds — crashes are valid signals (see ARCHITECTURE.md §5.2).
+//
+// This replaces the paid-tier /v2/screener/stocks/movers endpoint which
+// returns 404 on Alpaca's free plan.
 func (s *ScreenerClient) FetchMovers(ctx context.Context) ([]MoverResult, error) {
-	endpoint := s.baseURL + "/v2/screener/stocks/movers?top=50"
-
-	body, err := s.doGet(ctx, endpoint)
+	snapshots, err := s.fetchSnapshots(ctx, screenerUniverse)
 	if err != nil {
 		return nil, fmt.Errorf("FetchMovers: %w", err)
 	}
 
-	var resp moversResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("FetchMovers: unmarshal: %w", err)
-	}
-
-	// Merge gainers and losers into one slice for unified filtering.
-	all := append(resp.Gainers, resp.Losers...)
-
 	var results []MoverResult
-	for _, e := range all {
-		if e.Price < 1.0 || e.Price > 50.0 {
+	for symbol, snap := range snapshots {
+		price := snap.LatestTrade.Price
+		prevClose := snap.PrevDailyBar.Close
+
+		// Guard against division by zero — new listing with no prev close.
+		if prevClose == 0 {
 			continue
 		}
-		if math.Abs(e.ChangePercent) < 8.0 {
+
+		changePct := ((price - prevClose) / prevClose) * 100.0
+
+		if price < 1.0 || price > 50.0 {
 			continue
 		}
+		if math.Abs(changePct) < 8.0 {
+			continue
+		}
+
 		results = append(results, MoverResult{
-			Symbol:        e.Symbol,
-			Price:         e.Price,
-			ChangePercent: e.ChangePercent,
+			Symbol:        symbol,
+			Price:         price,
+			ChangePercent: changePct,
 		})
 	}
 
-	s.logger.Printf("FetchMovers: %d results after filter (from %d total)", len(results), len(all))
+	// Sort by absolute change percent descending so the biggest movers come first.
+	sort.Slice(results, func(i, j int) bool {
+		return math.Abs(results[i].ChangePercent) > math.Abs(results[j].ChangePercent)
+	})
+
+	s.logger.Printf("FetchMovers: %d results after filter (from %d snapshots)", len(results), len(snapshots))
 	return results, nil
 }
 
-// FetchMostActives calls /v2/screener/stocks/most-actives with top=30, by=trades.
+// FetchMostActives fetches snapshots for the screenerUniverse and returns
+// the top 30 symbols ranked by today's volume (dailyBar.v) descending.
 // Returns all results unfiltered — the relative-volume filter is applied in
 // manager.go build() when merging with movers and seed tickers.
+//
+// This replaces the paid-tier /v2/screener/stocks/most-actives endpoint
+// which returns 404 on Alpaca's free plan.
 func (s *ScreenerClient) FetchMostActives(ctx context.Context) ([]MoverResult, error) {
-	endpoint := s.baseURL + "/v2/screener/stocks/most-actives?top=30&by=trades"
-
-	body, err := s.doGet(ctx, endpoint)
+	snapshots, err := s.fetchSnapshots(ctx, screenerUniverse)
 	if err != nil {
 		return nil, fmt.Errorf("FetchMostActives: %w", err)
 	}
 
-	var resp mostActivesResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("FetchMostActives: unmarshal: %w", err)
+	// Collect all symbols with their snapshot data for sorting.
+	type entry struct {
+		symbol string
+		snap   snapshotData
+	}
+	entries := make([]entry, 0, len(snapshots))
+	for symbol, snap := range snapshots {
+		entries = append(entries, entry{symbol: symbol, snap: snap})
 	}
 
-	results := make([]MoverResult, 0, len(resp.MostActives))
-	for _, e := range resp.MostActives {
+	// Sort by daily volume descending — most traded symbols first.
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].snap.DailyBar.Volume > entries[j].snap.DailyBar.Volume
+	})
+
+	// Take top 30.
+	const maxResults = 30
+	if len(entries) > maxResults {
+		entries = entries[:maxResults]
+	}
+
+	results := make([]MoverResult, 0, len(entries))
+	for _, e := range entries {
+		price := e.snap.LatestTrade.Price
+		prevClose := e.snap.PrevDailyBar.Close
+		var changePct float64
+		if prevClose != 0 {
+			changePct = ((price - prevClose) / prevClose) * 100.0
+		}
 		results = append(results, MoverResult{
-			Symbol:        e.Symbol,
-			Price:         e.Price,
-			ChangePercent: e.ChangePercent,
+			Symbol:        e.symbol,
+			Price:         price,
+			ChangePercent: changePct,
 		})
 	}
 
-	s.logger.Printf("FetchMostActives: %d results", len(results))
+	s.logger.Printf("FetchMostActives: %d results (from %d snapshots)", len(results), len(snapshots))
 	return results, nil
 }
 
@@ -197,6 +265,32 @@ func (s *ScreenerClient) FetchAvgVolume(ctx context.Context, ticker string) (int
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+// fetchSnapshots calls GET /v2/stocks/snapshots?symbols=... for the given
+// symbol list and returns a map of symbol → snapshotData.
+// This is a free-tier Alpaca endpoint that returns latest trade, daily bar,
+// and previous daily bar for each requested symbol.
+func (s *ScreenerClient) fetchSnapshots(ctx context.Context, symbols []string) (map[string]snapshotData, error) {
+	// Join all symbols into a comma-separated query parameter.
+	// The snapshots endpoint accepts up to ~200 symbols per call.
+	params := url.Values{}
+	params.Set("symbols", strings.Join(symbols, ","))
+
+	endpoint := fmt.Sprintf("%s/v2/stocks/snapshots?%s", s.baseURL, params.Encode())
+
+	body, err := s.doGet(ctx, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("fetchSnapshots: %w", err)
+	}
+
+	// The response is a JSON object keyed by symbol.
+	var snapshots map[string]snapshotData
+	if err := json.Unmarshal(body, &snapshots); err != nil {
+		return nil, fmt.Errorf("fetchSnapshots: unmarshal: %w", err)
+	}
+
+	return snapshots, nil
+}
 
 // doGet builds an authenticated GET request, executes it using the shared
 // httpClient, and returns the response body bytes.
