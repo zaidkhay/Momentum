@@ -39,6 +39,10 @@ type RedisWriter interface {
 	SetWatchlist(tickers []string) error
 }
 
+// maxWatchlistSize is the hard cap on subscribed symbols.
+// Alpaca's free IEX WebSocket tier allows at most 30 concurrent subscriptions.
+const maxWatchlistSize = 30
+
 // ── Seed list ─────────────────────────────────────────────────────────────────
 
 // seedTickers is the static baseline watchlist subscribed on every startup.
@@ -213,7 +217,10 @@ func (m *Manager) PromoteToHopeful(ticker string) {
 func (m *Manager) build(ctx context.Context) {
 	m.logger.Printf("build: starting watchlist refresh")
 
-	// Step 1: collect tickers from screener.
+	// Step 1: collect tickers from screener in priority order.
+	// Movers first (actively moving), then most-actives, then seed tickers.
+	// This ordering ensures the cap in Step 3 keeps the highest-priority
+	// symbols when the combined list exceeds maxWatchlistSize (30).
 	var next []string
 
 	movers, err := m.screener.FetchMovers(ctx)
@@ -233,10 +240,11 @@ func (m *Manager) build(ctx context.Context) {
 		next = append(next, r.Symbol)
 	}
 
-	// Step 2: merge with seed tickers.
+	// Step 2: merge with seed tickers (lowest priority — appended last).
 	next = append(next, seedTickers...)
 
-	// Step 3: deduplicate using a set — order does not matter for subscriptions.
+	// Step 3: deduplicate preserving priority order (movers > actives > seed),
+	// then cap at maxWatchlistSize to stay within Alpaca's free-tier limit.
 	seen := make(map[string]bool, len(next))
 	deduped := make([]string, 0, len(next))
 	for _, t := range next {
@@ -245,7 +253,16 @@ func (m *Manager) build(ctx context.Context) {
 			deduped = append(deduped, t)
 		}
 	}
+	if len(deduped) > maxWatchlistSize {
+		deduped = deduped[:maxWatchlistSize]
+	}
 	next = deduped
+
+	// Rebuild seen map to match the capped list — used later as the new active set.
+	seen = make(map[string]bool, len(next))
+	for _, t := range next {
+		seen[t] = true
+	}
 
 	// Step 4: fetch avg volume for any ticker not already in avgVolumes cache.
 	// Holds avgMu write lock for each store — brief critical section.
