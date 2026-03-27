@@ -33,6 +33,12 @@ type SupabaseWriter interface {
 	UpsertAvgVolume(ctx context.Context, ticker string, avgVol int64) error
 }
 
+// RedisWriter abstracts Redis writes so Manager never imports the concrete
+// redis package. Used to persist the active ticker set to Redis.
+type RedisWriter interface {
+	SetWatchlist(tickers []string) error
+}
+
 // ── Seed list ─────────────────────────────────────────────────────────────────
 
 // seedTickers is the static baseline watchlist subscribed on every startup.
@@ -54,8 +60,9 @@ type Manager struct {
 	screener *ScreenerClient
 	// alpaca and supabase are interfaces — Manager never references concrete types.
 	// This keeps the dependency graph clean and enables mock testing.
-	alpaca   AlpacaSubscriber
-	supabase SupabaseWriter
+	alpaca      AlpacaSubscriber
+	supabase    SupabaseWriter
+	redisWriter RedisWriter
 
 	// active is the current set of subscribed tickers.
 	// sync.RWMutex allows multiple concurrent RLock readers (tickProcessor
@@ -83,14 +90,15 @@ type Manager struct {
 
 // NewManager initialises all maps and channels. Call Start() to begin
 // refreshing; NewManager itself performs no I/O.
-func NewManager(screener *ScreenerClient, alpaca AlpacaSubscriber, supabase SupabaseWriter) *Manager {
+func NewManager(screener *ScreenerClient, alpaca AlpacaSubscriber, supabase SupabaseWriter, redisWriter RedisWriter) *Manager {
 	return &Manager{
-		screener:   screener,
-		alpaca:     alpaca,
-		supabase:   supabase,
-		active:     make(map[string]bool),
-		avgVolumes: make(map[string]int64),
-		hopeful:    make(map[string]bool),
+		screener:    screener,
+		alpaca:      alpaca,
+		supabase:    supabase,
+		redisWriter: redisWriter,
+		active:      make(map[string]bool),
+		avgVolumes:  make(map[string]int64),
+		hopeful:     make(map[string]bool),
 		// Buffered size 0: closing done broadcasts to all blocked receivers.
 		done:   make(chan struct{}),
 		logger: log.New(os.Stderr, "[watchlist] ", log.LstdFlags),
@@ -300,6 +308,11 @@ func (m *Manager) build(ctx context.Context) {
 	m.mu.Lock()
 	m.active = seen // seen is the deduplicated next set as a map[string]bool
 	m.mu.Unlock()
+
+	// Step 8: persist active ticker set to Redis so the API service can read it.
+	if err := m.redisWriter.SetWatchlist(next); err != nil {
+		m.logger.Printf("build: SetWatchlist: %v", err)
+	}
 
 	m.logger.Printf("build: complete — %d active tickers (%d added, %d removed)",
 		len(next), len(add), len(remove))

@@ -118,6 +118,36 @@ func (w *RedisWriter) Enqueue(state types.SymbolState) {
 	}
 }
 
+// SetWatchlist atomically replaces the watchlist:active Redis SET with
+// the given tickers. Uses a pipeline to DEL the old key and SADD all
+// tickers in a single round trip. No expiry — the set persists until
+// the next build() call overwrites it.
+func (w *RedisWriter) SetWatchlist(tickers []string) error {
+	ctx := context.Background()
+	const key = "watchlist:active"
+
+	// Redis pipeline batches DEL + SADD into one network round trip.
+	pipe := w.client.Pipeline()
+	pipe.Del(ctx, key)
+
+	if len(tickers) > 0 {
+		// Convert []string to []interface{} for SADD's variadic parameter.
+		members := make([]interface{}, len(tickers))
+		for i, t := range tickers {
+			members[i] = t
+		}
+		pipe.SAdd(ctx, key, members...)
+	}
+
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("SetWatchlist: pipeline exec: %w", err)
+	}
+
+	w.logger.Printf("SetWatchlist: wrote %d tickers to %s", len(tickers), key)
+	return nil
+}
+
 // Close signals the flushLoop goroutine to stop after one final flush,
 // then closes the Redis client's connection pool.
 // Call this once during graceful shutdown.

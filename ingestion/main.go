@@ -92,7 +92,7 @@ func main() {
 	// Watchlist manager must be created before the Hopeful promoter because
 	// the promoter needs a WatchlistPromoter interface reference.
 	screener := watchlist.NewScreenerClient(alpacaKey, alpacaSecret)
-	watchlistMgr := watchlist.NewManager(screener, alpacaClient, sb)
+	watchlistMgr := watchlist.NewManager(screener, alpacaClient, sb, rw)
 	log.Println("main: watchlist manager created")
 
 	// ── Step 9: create and start Hopeful promoter ────────────────────────
