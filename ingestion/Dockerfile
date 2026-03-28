@@ -1,4 +1,3 @@
-# See ARCHITECTURE.md §3.2 — Go ingestion service
 # Multi-stage build: compile then copy binary into minimal image
 
 FROM golang:1.22-alpine AS builder
