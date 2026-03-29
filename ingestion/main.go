@@ -133,6 +133,13 @@ func main() {
 					return
 				}
 
+				// Tag sympathy peers so the Redis JSON includes isSympathy
+				// and parent fields. See ARCHITECTURE.md §4.4.
+				if parent, ok := watchlistMgr.GetSympathyParent(state.Ticker); ok {
+					state.IsSympathy = true
+					state.Parent = parent
+				}
+
 				// Fetch the 30-day average volume for this ticker from the
 				// watchlist manager's cache. Returns 0 if unknown.
 				avgVol := watchlistMgr.GetAvgVolume(state.Ticker)

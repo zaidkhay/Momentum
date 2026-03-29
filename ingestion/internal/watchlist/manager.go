@@ -86,6 +86,11 @@ type Manager struct {
 	hopeful   map[string]bool
 	hopefulMu sync.RWMutex
 
+	// sympathyPeers maps each sympathy peer ticker to its Hopeful leader.
+	// Populated by PromoteToHopeful, read by GetSympathyParent.
+	// Protected by mu (same lock as active map — always updated together).
+	sympathyPeers map[string]string
+
 	// done is a signal-only channel closed by Stop() to unblock all goroutines.
 	done chan struct{}
 
@@ -96,13 +101,14 @@ type Manager struct {
 // refreshing; NewManager itself performs no I/O.
 func NewManager(screener *ScreenerClient, alpaca AlpacaSubscriber, supabase SupabaseWriter, redisWriter RedisWriter) *Manager {
 	return &Manager{
-		screener:    screener,
-		alpaca:      alpaca,
-		supabase:    supabase,
-		redisWriter: redisWriter,
-		active:      make(map[string]bool),
-		avgVolumes:  make(map[string]int64),
-		hopeful:     make(map[string]bool),
+		screener:      screener,
+		alpaca:        alpaca,
+		supabase:      supabase,
+		redisWriter:   redisWriter,
+		active:        make(map[string]bool),
+		avgVolumes:    make(map[string]int64),
+		hopeful:       make(map[string]bool),
+		sympathyPeers: make(map[string]string),
 		// Buffered size 0: closing done broadcasts to all blocked receivers.
 		done:   make(chan struct{}),
 		logger: log.New(os.Stderr, "[watchlist] ", log.LstdFlags),
@@ -165,7 +171,9 @@ func (m *Manager) GetActive() []string {
 
 // PromoteToHopeful adds ticker to the hopeful set, then subscribes any
 // sympathy peers (from SympathyMap) not already in the active watchlist.
-// Newly added peers are also recorded in the active map.
+// Newly added peers are also recorded in the active map and the
+// sympathyPeers map (peer → leader) so the tickProcessor can tag each
+// peer's SymbolState with IsSympathy=true and Parent=leader.
 // See ARCHITECTURE.md §4.3 — Hopeful promotion criteria.
 // See ARCHITECTURE.md §4.4 — sympathy play subscription logic.
 func (m *Manager) PromoteToHopeful(ticker string) {
@@ -191,6 +199,9 @@ func (m *Manager) PromoteToHopeful(ticker string) {
 			m.active[peer] = true
 			newPeers = append(newPeers, peer)
 		}
+		// Record the sympathy relationship regardless of whether the peer
+		// was already active — the leader may have changed.
+		m.sympathyPeers[peer] = ticker
 	}
 
 	if len(newPeers) == 0 {
@@ -206,6 +217,16 @@ func (m *Manager) PromoteToHopeful(ticker string) {
 		// Peers were added to active map — reconnectLoop will re-subscribe them.
 	}
 	m.logger.Printf("PromoteToHopeful: %s promoted, subscribed sympathy peers: %v", ticker, newPeers)
+}
+
+// GetSympathyParent returns the Hopeful leader ticker for a sympathy peer.
+// Returns ("", false) if ticker is not a sympathy peer.
+// Called by tickProcessor on every tick — reads under mu.RLock().
+func (m *Manager) GetSympathyParent(ticker string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	parent, ok := m.sympathyPeers[ticker]
+	return parent, ok
 }
 
 // ── Private methods ───────────────────────────────────────────────────────────
