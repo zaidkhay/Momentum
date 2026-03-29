@@ -1,4 +1,4 @@
-# See ARCHITECTURE.md §3.1 — Python FastAPI service
+
 FROM python:3.11-slim
 WORKDIR /app
 COPY requirements.txt .
