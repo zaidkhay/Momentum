@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* See ARCHITECTURE.md §10.2 — flash animation on price change, 350ms */
+@keyframes flash-up {
+  0%   { background-color: #EAF4EE; }
+  100% { background-color: transparent; }
+}
+
+@keyframes flash-down {
+  0%   { background-color: #F7EAEA; }
+  100% { background-color: transparent; }
+}
+
+.flash-up {
+  animation: flash-up 350ms ease-out;
+}
+
+.flash-down {
+  animation: flash-down 350ms ease-out;
+}
